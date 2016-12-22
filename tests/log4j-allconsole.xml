@@ -72,6 +72,14 @@
         <level value="INFO"/>
     </logger>
 
+    <logger name="DR">
+        <level value="DEBUG"/>
+    </logger>
+
+    <logger name="DRAGENT">
+       <level value="TRACE"/>
+    </logger>
+
     <root>
         <priority value="info" />
         <appender-ref ref="file" />

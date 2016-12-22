@@ -65,6 +65,7 @@ public class PayloadProcessor
     }
 
     private final int KeySize;
+    private final int KeyMinValue;
     private final int MinValueSize;
     private final int MaxValueSize;
     private final int PoolSize;
@@ -88,7 +89,6 @@ public class PayloadProcessor
                 return entropyBytesGlobal.duplicate();
         }
     };
-
     public PayloadProcessor(
             int keySize,
             int minValueSize,
@@ -97,7 +97,19 @@ public class PayloadProcessor
             int poolSize,
             boolean useCompression)
     {
+        this(keySize, 0, minValueSize, maxValueSize, entropy, poolSize, useCompression);
+    }
+    public PayloadProcessor(
+            int keySize,
+            int keyMinValue,
+            int minValueSize,
+            int maxValueSize,
+            int entropy,
+            int poolSize,
+            boolean useCompression)
+    {
         this.KeySize = keySize;
+        this.KeyMinValue = keyMinValue;
         this.MinValueSize = minValueSize;
         this.MaxValueSize = maxValueSize;
         this.PoolSize = poolSize;
@@ -115,7 +127,7 @@ public class PayloadProcessor
 
     public Pair generateForStore()
     {
-        final String key = String.format(this.KeyFormat, this.Rand.nextInt(this.PoolSize));
+        final String key = String.format(this.KeyFormat, this.Rand.nextInt(this.PoolSize) + this.KeyMinValue);
         final byte[] rawValue = new byte[this.MinValueSize+this.Rand.nextInt(this.MaxValueSize-this.MinValueSize+1)];
         if (entropyBytes.get().remaining() > rawValue.length){
             entropyBytes.get().get(rawValue);

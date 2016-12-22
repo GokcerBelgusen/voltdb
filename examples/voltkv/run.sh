@@ -21,7 +21,7 @@ source $VOLTDB_BIN/voltenv
 # (once running, all nodes are the same -- no leaders)
 STARTUPLEADERHOST="localhost"
 # list of cluster nodes separated by commas in host:[port] format
-SERVERS="localhost"
+#SERVERS="localhost"
 
 # remove binaries, logs, runtime artifacts, etc... but keep the client jar
 function clean() {
@@ -89,10 +89,12 @@ function async-benchmark() {
         --displayinterval=5 \
         --duration=120 \
         --servers=$SERVERS \
-        --poolsize=100000 \
+        --keyminvalue=1 \
+        --poolsize=10000 \
         --preload=true \
         --getputratio=0.90 \
         --keysize=32 \
+        --keyminvalue=0 \
         --minvaluesize=1024 \
         --maxvaluesize=1024 \
         --entropy=127 \
@@ -148,7 +150,7 @@ function jdbc-benchmark() {
 }
 
 function help() {
-    echo "Usage: ./run.sh {clean|cleanall|jars|server|init|client|async-benchmark|aysnc-benchmark-help|...}"
+    echo "Usage: ./run.sh {clean|cleanall|jars|server|init|client|async-benchmark|async-benchmark-help|...}"
     echo "       {...|sync-benchmark|sync-benchmark-help|jdbc-benchmark|jdbc-benchmark-help}"
 }
 
@@ -160,4 +162,3 @@ do
     echo "${0}: Performing $arg..."
     $arg
 done
-

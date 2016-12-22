@@ -112,6 +112,9 @@ public class AsyncBenchmark {
         @Option(desc = "Comma separated list of the form server[:port] to connect to.")
         String servers = "localhost";
 
+        @Option(desc = "Min value for the key.")
+        int keyminvalue = 0;
+
         @Option(desc = "Number of keys to preload.")
         int poolsize = 100000;
 
@@ -196,7 +199,7 @@ public class AsyncBenchmark {
         periodicStatsContext = client.createStatsContext();
         fullStatsContext = client.createStatsContext();
 
-        processor = new PayloadProcessor(config.keysize, config.minvaluesize,
+        processor = new PayloadProcessor(config.keysize, config.keyminvalue, config.minvaluesize,
                 config.maxvaluesize, config.entropy, config.poolsize, config.usecompression);
 
         System.out.print(HORIZONTAL_RULE);
@@ -442,7 +445,7 @@ public class AsyncBenchmark {
         System.out.println();
         if (config.preload) {
             System.out.println("Preloading data store...");
-            for(int i=0; i < config.poolsize; i++) {
+            for(int i=config.keyminvalue; i < config.poolsize+config.keyminvalue; i++) {
                 client.callProcedure(new NullCallback(),
                                      "STORE.upsert",
                                      String.format(processor.KeyFormat, i),
