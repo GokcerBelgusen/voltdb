@@ -89,8 +89,8 @@ function async-benchmark() {
         --displayinterval=5 \
         --duration=120 \
         --servers=$SERVERS \
-        --keyminvalue=1 \
-        --poolsize=10000 \
+        --keyminvalue=0 \
+        --poolsize=100000 \
         --preload=true \
         --getputratio=0.90 \
         --keysize=32 \
@@ -102,6 +102,67 @@ function async-benchmark() {
 #        --latencyreport=true \
 #        --ratelimit=100000
 }
+
+function async-benchmark1() {
+    jars-ifneeded
+    java -classpath voltkv-client.jar:$CLIENTCLASSPATH voltkv.AsyncBenchmark \
+        --displayinterval=5 \
+        --duration=1200 \
+        --servers=$SERVERS \
+        --keyminvalue=0 \
+        --poolsize=100000 \
+        --preload=true \
+        --getputratio=0.90 \
+        --keysize=32 \
+        --keyminvalue=0 \
+        --minvaluesize=1024 \
+        --maxvaluesize=1024 \
+        --entropy=127 \
+        --usecompression=false
+#        --latencyreport=true \
+#        --ratelimit=100000
+}
+
+function async-benchmark2() {
+    jars-ifneeded
+    java -classpath voltkv-client.jar:$CLIENTCLASSPATH voltkv.AsyncBenchmark \
+        --displayinterval=5 \
+        --duration=600 \
+        --servers=$SERVERS \
+        --keyminvalue=100001 \
+        --poolsize=100000 \
+        --preload=true \
+        --getputratio=0.90 \
+        --keysize=32 \
+        --keyminvalue=0 \
+        --minvaluesize=1024 \
+        --maxvaluesize=1024 \
+        --entropy=127 \
+        --usecompression=false
+#        --latencyreport=true \
+#        --ratelimit=100000
+}
+
+function async-benchmark3() {
+    jars-ifneeded
+    java -classpath voltkv-client.jar:$CLIENTCLASSPATH voltkv.AsyncBenchmark \
+        --displayinterval=5 \
+        --duration=300 \
+        --servers=$SERVERS \
+        --keyminvalue=200001 \
+        --poolsize=100000 \
+        --preload=true \
+        --getputratio=0.90 \
+        --keysize=32 \
+        --keyminvalue=0 \
+        --minvaluesize=1024 \
+        --maxvaluesize=1024 \
+        --entropy=127 \
+        --usecompression=false
+#        --latencyreport=true \
+#        --ratelimit=100000
+}
+
 
 # Multi-threaded synchronous benchmark sample
 # Use this target for argument help
