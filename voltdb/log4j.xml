@@ -100,13 +100,13 @@
         <level value="INFO"/>
     </logger -->
 
-    <!-- logger name="DRAGENT">
-        <level value="INFO"/>
-    </logger -->
+    <logger name="DRAGENT">
+        <level value="TRACE"/>
+    </logger>
 
-    <!-- logger name="DR">
-        <level value="INFO"/>
-    </logger -->
+    <logger name="DR">
+        <level value="DEBUG"/>
+    </logger>
 
     <!-- logger name="DBBPOOL">
         <level value="TRACE"/>
