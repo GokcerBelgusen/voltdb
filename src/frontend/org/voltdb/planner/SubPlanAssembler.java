@@ -41,6 +41,7 @@ import org.voltdb.expressions.OperatorExpression;
 import org.voltdb.expressions.ParameterValueExpression;
 import org.voltdb.expressions.TupleValueExpression;
 import org.voltdb.expressions.VectorValueExpression;
+import org.voltdb.expressions.WindowFunctionExpression;
 import org.voltdb.planner.parseinfo.JoinNode;
 import org.voltdb.planner.parseinfo.StmtTableScan;
 import org.voltdb.planner.parseinfo.StmtTargetTableScan;
@@ -82,7 +83,7 @@ public abstract class SubPlanAssembler {
     // but just get their contents dumped into a summary List that was created
     // inline and NOT initialized here.
     private final static List<AbstractExpression> s_reusableImmutableEmptyBinding =
-        new ArrayList<AbstractExpression>();
+        new ArrayList<>();
 
     // Constants to specify how getIndexableExpressionFromFilters should react
     // to finding a filter that matches the current criteria.
@@ -125,9 +126,9 @@ public abstract class SubPlanAssembler {
                                                                    List<AbstractExpression> joinExprs,
                                                                    List<AbstractExpression> filterExprs,
                                                                    List<AbstractExpression> postExprs) {
-        ArrayList<AccessPath> paths = new ArrayList<AccessPath>();
-        List<AbstractExpression> allJoinExprs = new ArrayList<AbstractExpression>();
-        List<AbstractExpression> allExprs = new ArrayList<AbstractExpression>();
+        ArrayList<AccessPath> paths = new ArrayList<>();
+        List<AbstractExpression> allJoinExprs = new ArrayList<>();
+        List<AbstractExpression> allExprs = new ArrayList<>();
         // add the empty seq-scan access path
         if (joinExprs != null) {
             allExprs.addAll(joinExprs);
@@ -156,7 +157,7 @@ public abstract class SubPlanAssembler {
                     // All index WHERE sub-expressions must be covered to enable the index.
                     // For optimization purposes, keep track of the covering (query) expressions that exactly match the
                     // covered index sub-expression. They can be eliminated from the post-filter expressions.
-                    List<AbstractExpression> exactMatchCoveringExprs = new ArrayList<AbstractExpression>();
+                    List<AbstractExpression> exactMatchCoveringExprs = new ArrayList<>();
                     if (isPartialIndexPredicateCovered(tableScan, allExprs, path.index, exactMatchCoveringExprs)) {
                         filterPostPredicateForPartialIndex(path, exactMatchCoveringExprs);
                     } else {
@@ -166,7 +167,7 @@ public abstract class SubPlanAssembler {
             } else if (!index.getPredicatejson().isEmpty()) {
                 // Partial index can be used solely to eliminate a post-filter
                 // even when the indexed columns are irrelevant
-                List<AbstractExpression> exactMatchCoveringExprs = new ArrayList<AbstractExpression>();
+                List<AbstractExpression> exactMatchCoveringExprs = new ArrayList<>();
                 if (isPartialIndexPredicateCovered(tableScan, allExprs, index, exactMatchCoveringExprs)) {
                     path = getRelevantNaivePath(allJoinExprs, filterExprs);
                     filterPostPredicateForPartialIndex(path, exactMatchCoveringExprs);
@@ -325,7 +326,7 @@ public abstract class SubPlanAssembler {
         }
 
         // Copy the expressions to a new working list that can be culled as filters are processed.
-        List<AbstractExpression> filtersToCover = new ArrayList<AbstractExpression>();
+        List<AbstractExpression> filtersToCover = new ArrayList<>();
         filtersToCover.addAll(exprs);
 
         boolean indexIsGeographical;
@@ -388,7 +389,7 @@ public abstract class SubPlanAssembler {
         // In some borderline cases, the determination to use the index's order is optimistic and
         // provisional; it can be undone later in this function as new info comes to light.
         int orderSpoilers[] = new int[keyComponentCount];
-        List<AbstractExpression> bindingsForOrder = new ArrayList<AbstractExpression>();
+        List<AbstractExpression> bindingsForOrder = new ArrayList<>();
         int nSpoilers = determineIndexOrdering(tableScan, keyComponentCount,
                                                indexedExprs, indexedColRefs,
                                                retval, orderSpoilers, bindingsForOrder);
@@ -883,6 +884,245 @@ public abstract class SubPlanAssembler {
         return false;
     }
 
+    class WindowFunctionScore {
+        /**
+         * A constructor for creating a score from a
+         * WindowFunctionExpression.
+         *
+         * @param winfunc
+         * @param tableName
+         */
+        public WindowFunctionScore(WindowFunctionExpression winfunc,
+                                   int winFuncNum,
+                                   String tableName,
+                                   SingleValueChecker singleValueChecker) {
+            m_tableName = tableName;
+            m_partitionByExprs = new HashSet<>();
+            m_partitionByExprs.addAll(winfunc.getPartitionByExpressions());
+            m_unmatchedOrderByExprs = new ArrayList<>();
+            m_unmatchedOrderByExprs.addAll(winfunc.getOrderByExpressions());
+            m_unmatchedOrderByDirs = new ArrayList<>();
+            m_unmatchedOrderByDirs.addAll(winfunc.getOrderByDirections());
+            assert(0 <= winFuncNum);
+            m_windowFunctionNumber = winFuncNum;
+            m_singleValueChecker = singleValueChecker;
+            m_unmatchedOrderByCursor = 0;
+        }
+
+        /**
+         * A constructor for creating a score from a
+         * statement level group by expression.
+         *
+         * @param groupByExpressions
+         * @param tableName
+         */
+        public WindowFunctionScore(List<ParsedColInfo> groupByExpressions,
+                                   String tableName,
+                                   SingleValueChecker singleValueChecker) {
+            m_tableName = tableName;
+            m_partitionByExprs = new HashSet<>();
+            m_unmatchedOrderByExprs = new ArrayList<>();
+            m_unmatchedOrderByDirs = new ArrayList<>();
+            m_singleValueChecker = singleValueChecker;
+            for (ParsedColInfo pci : groupByExpressions) {
+                m_unmatchedOrderByExprs.add(pci.expression);
+                m_unmatchedOrderByDirs.add(pci.ascending ? SortDirectionType.ASC : SortDirectionType.DESC);
+            }
+            // Statement level order by expressions are number -1.
+            m_windowFunctionNumber = -1;
+            m_unmatchedOrderByCursor = 0;
+        }
+
+        // Set of active partition by expressions
+        // for this window function.
+        Set<AbstractExpression> m_partitionByExprs;
+        // Sequence of expressions which
+        // either match index expression or which have
+        // single values.   These are from the partition
+        // by list or else from the order by list.  At
+        // the end this will be the concatenation of the
+        // partition by list and the order by list.
+        List<AbstractExpression> m_orderedMatchingExpressions;
+        // List of order by expressions, originally from the
+        // WindowFunctionExpression.  These migrate to
+        // m_orderedMatchingExpressions as they match.
+        List<AbstractExpression> m_unmatchedOrderByExprs;
+        // This is the index of the unmatched expression
+        // we will be working on.
+        int m_unmatchedOrderByCursor;
+        // List of order unmatched sort orders, originally
+        // from the WindowFunctionExpression.  These migrate to
+        // m_orderedSortDirs as expressions match.
+        List<SortDirectionType> m_unmatchedOrderByDirs;
+        // This is the number of the window function.  It is
+        // -1 for the statement level order by list.
+        int m_windowFunctionNumber;
+        // This object checks if an expression or a column reference
+        // is constrained to have a single value only.
+        SingleValueChecker m_singleValueChecker;
+        // This is true if we ever see an index
+        // expression or column which we cannot
+        // match, even including single valued expressions
+        // here.
+        boolean m_isDead = false;
+        // This is true if we have run out of expressions
+        // to check.  Since we may be checking more than one
+        // candidate for using the index, we may run out of
+        // expressions at different times.
+        boolean m_isDone = false;
+        // This is the name of the table of the index
+        // we are scanning.  It's actually the name of
+        // the table scan, but the table scan name and
+        // index table name must match.
+        private String m_tableName;
+        // This is the sort direction for this window function
+        // or order by list.
+        private SortDirectionType m_sortDirection = SortDirectionType.INVALID;
+
+
+        public boolean isDead() {
+            return m_isDead;
+        }
+
+        public boolean isDone() {
+            if (m_isDone) {
+                return true;
+            }
+            if (m_partitionByExprs.isEmpty() && m_unmatchedOrderByExprs.size() <= m_unmatchedOrderByCursor) {
+                m_isDone = true;
+                return true;
+            }
+            return false;
+        }
+
+        public void matchIndexEntry(AbstractExpression indexExpr,
+                                    ColumnRef indexColRef) {
+            // Don't bother to do anything if
+            // we are dead or done.
+            if (isDead() || isDone()) {
+                return;
+            }
+            AbstractExpression expr = indexExpr;
+            // If the index only has columns, then construct
+            // an expression which we can use to test equality
+            // with partition by or group by expressions.
+            if (expr == null) {
+                // This is misleading.  The catalog function getTypeName returns the name
+                // of type of catalog entry.  In this case the catalog type is Column,
+                // so the TypeName is the name of the column.  It has nothing to do with
+                // value types or expression types.
+                String colName = indexColRef.getColumn().getTypeName();
+                expr = new TupleValueExpression(m_tableName, m_tableName, colName, colName);
+            }
+            if ( ! m_partitionByExprs.isEmpty() ) {
+                if (m_partitionByExprs.contains(expr)) {
+                    m_orderedMatchingExpressions.add(expr);
+                    m_partitionByExprs.remove(expr);
+                } else if ( ! m_singleValueChecker.isSingleValued(expr)) {
+                    m_isDead = true;
+                }
+                // We have either died or matched.
+                // Get out of town before someone notices us
+                // and charges us rent.
+                return;
+            }
+            AbstractExpression nextExpr = m_unmatchedOrderByExprs.get(m_unmatchedOrderByCursor);
+            SortDirectionType nextDir = m_unmatchedOrderByDirs.get(m_unmatchedOrderByCursor);
+            m_unmatchedOrderByCursor += 1;
+            // If we have not settled on a sort direction
+            // yet, we have to decide now.
+            if (m_sortDirection == SortDirectionType.INVALID) {
+                m_sortDirection = nextDir;
+            }
+            if ( ! ( indexExpr.equals(nextExpr) && nextDir == m_sortDirection) ) {
+                // If this order by expression is single valued, it's
+                // ok with us, even if it doesn't match.
+                if ( ! m_singleValueChecker.isSingleValued(expr) ) {
+                    m_isDead = true;
+                }
+            }
+            // Add the next window expression to the
+            // ordered expression list.
+            m_orderedMatchingExpressions.add(nextExpr);
+        }
+    };
+
+    class WindowFunctionScoreboard {
+        public WindowFunctionScoreboard(ParsedSelectStmt pss, SingleValueChecker singleValueChecker, String tableName) {
+            m_tableName = tableName;
+            m_numWinScores = (pss != null) ? pss.getWindowFunctionExpressions().size() : 0;
+            m_numOrderByScores = (pss.hasOrderByColumns() ? 1 : 0);
+            m_winFunctions = new WindowFunctionScore[m_numWinScores + m_numOrderByScores];
+            for (int idx = 0; idx < m_numWinScores; idx += 1) {
+                m_winFunctions[idx] = new WindowFunctionScore(pss.getWindowFunctionExpressions().get(idx),
+                                                              idx,
+                                                              tableName,
+                                                              singleValueChecker);
+            }
+            if (m_numOrderByScores > 0) {
+                m_winFunctions[m_numWinScores] = new WindowFunctionScore(pss.orderByColumns(),
+                                                                         tableName,
+                                                                         singleValueChecker);
+            }
+        }
+
+        public boolean isSortAscending() {
+            return m_sortDirection == SortDirectionType.ASC;
+        }
+
+        public boolean isSortDefined() {
+            return m_sortDirection != SortDirectionType.INVALID;
+        }
+
+        public void setSortOrder(SortDirectionType sorder) {
+            m_sortDirection = sorder;
+        }
+        private String m_tableName;
+        private WindowFunctionScore m_winFunctions[];
+        private int m_numWinScores;
+        private int m_numOrderByScores;
+
+        /*
+         * Unfortunately the sort direction must be the
+         * same for all the expressions or columns.
+         */
+        SortDirectionType m_sortDirection = SortDirectionType.INVALID;
+        public boolean isDone() {
+            for (WindowFunctionScore score : m_winFunctions) {
+                if (!score.isDone()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public void matchIndexEntry(AbstractExpression indexExpr, ColumnRef indexColRef) {
+            for (WindowFunctionScore score : m_winFunctions) {
+                if ( ! score.isDead() ) {
+                    score.matchIndexEntry(indexExpr, indexColRef);
+                }
+            }
+        }
+        /**
+         * Return an integer telling how this index can
+         * be used.  The choices are:
+         * <ol>
+         *   <li>n &ge; 0 if this index can be used for
+         *       window function n.</li>
+         *   <li>-1 if this index can not be used for any
+         *       window functions, but if there is a statement
+         *       level order by clause and this index can be used
+         *       for it.</li>
+         *   <li>-2 if this index can't be used for anything.</li>
+         * </ol>
+         *
+         * @return
+         */
+        public int getResult() {
+            return -2;
+        }
+    };
+
     /**
      * Try to use the index scan's inherent ordering to implement the ORDER BY clause.
      * The most common scenario for this optimization is when the ORDER BY "columns"
@@ -1006,78 +1246,72 @@ public abstract class SubPlanAssembler {
     private int determineIndexOrdering(StmtTableScan tableScan, int keyComponentCount,
             List<AbstractExpression> indexedExprs, List<ColumnRef> indexedColRefs,
             AccessPath retval, int[] orderSpoilers,
-            List<AbstractExpression> bindingsForOrder)
+            List<AbstractExpression> bindingsForOrder,
+            SingleValueChecker singleValueChecker)
     {
-        if (!m_parsedStmt.hasOrderByColumns()
-                || m_parsedStmt.orderByColumns().isEmpty()) {
+        // Organize a little bit.
+        ParsedSelectStmt pss = (m_parsedStmt instanceof ParsedSelectStmt)
+                                  ? ((ParsedSelectStmt)m_parsedStmt)
+                                  : null;
+        boolean hasOrderBy = ( m_parsedStmt.hasOrderByColumns()
+                                  && ( ! m_parsedStmt.orderByColumns().isEmpty() ) );
+        boolean hasWindowFunctions = (pss != null && pss.hasWindowFunctionExpression());
+        //
+        // If we have no statement level order by or window functions,
+        // then we can't use this index for ordering, and we
+        // return 0.
+        //
+        if (! hasOrderBy && ! hasWindowFunctions) {
             return 0;
-        } else if (m_parsedStmt instanceof ParsedSelectStmt) {
-            // If this parsed select statement has a windowed expression,
-            // we don't want to consider the order by at all.
-            // Note that this is the content of ENG-10474.
-            ParsedSelectStmt pss = (ParsedSelectStmt)m_parsedStmt;
-            if (pss.hasWindowFunctionExpression()) {
-                return 0;
-            }
         }
         int nSpoilers = 0;
-        int countOrderBys = m_parsedStmt.orderByColumns().size();
+        int numIndexExprs = indexedExprs.size();
+        //
+        // Note: If S1 and S2 are sequences of expressions, then S1 is a
+        //       singular prefix of S2 iff when we erase all expressions
+        //       from S1 which are constrained to have a single value, then
+        //       the resulting erasure, erase(S1), is a prefix of S2.  Note
+        //       that we only erase from S1 and not S2.
+        // What expressions must we match?
+        //   1.) We have the parameter indexedExpressions, which is the
+        //       sequence of expressions from the index.  Call this sequence
+        //       IS for short.  We treat indexed columns similarly.
+        // What expressions do we care about?  We have two kinds.
+        //   1.) The expressions from the order by clause, OO.  This sequence
+        //       of expressions must be a singular prefix of IS.
+        //   2.) The expressions in a window function's partition by list, WP,
+        //       followed by the expressions in the window function's
+        //       order by list, WO.  The partition by functions are a set not
+        //       a sequence.  We need to find a sequence of expressions, S,
+        //       such that S is a permutation of P and S+WO is a singular prefix
+        //       of IS.
+        //
+        // So, in both cases, order by and window function, we are looking for
+        // a sequence of expressions, S1, such that erase(S1) is a prefix of
+        // IS.  If OO is not a prefix we still care to know about window functions.
+        // If there are window functions but they all fail, we must give up on this
+        // index, even if OO is still matching.  This is because the window functions
+        // will require sorting.  Even if an index scan can match the statement
+        // order by sort, the window functions need a sort which will invalidate
+        // the statement level order by sort.
+        //
         // There need to be enough indexed expressions to provide full sort coverage.
-        if (countOrderBys > 0 && countOrderBys <= keyComponentCount) {
-            boolean ascending = m_parsedStmt.orderByColumns().get(0).ascending;
-            retval.sortDirection = ascending ? SortDirectionType.ASC : SortDirectionType.DESC;
-            int jj = 0;
-            for (ParsedColInfo colInfo : m_parsedStmt.orderByColumns()) {
-                // This retry loop allows catching special cases that don't perfectly match the
-                // ORDER BY columns but may still be usable for ordering.
-                for ( ; jj < keyComponentCount; ++jj) {
-                    if (colInfo.ascending == ascending) {
-                        // Explicitly advance to the each indexed expression/column
-                        // to match them with the query's "ORDER BY" expressions.
-                        if (indexedExprs == null) {
-                            ColumnRef nextColRef = indexedColRefs.get(jj);
-                            if (colInfo.expression instanceof TupleValueExpression &&
-                                colInfo.tableAlias.equals(tableScan.getTableAlias()) &&
-                                colInfo.columnName.equals(nextColRef.getColumn().getTypeName())) {
-                                break;
-                            }
-                        } else {
-                            assert(jj < indexedExprs.size());
-                            AbstractExpression nextExpr = indexedExprs.get(jj);
-                            List<AbstractExpression> moreBindings =
-                                colInfo.expression.bindingToIndexedExpression(nextExpr);
-                            // Non-null bindings (even an empty list) denotes a match.
-                            if (moreBindings != null) {
-                                bindingsForOrder.addAll(moreBindings);
-                                break;
-                            }
-                        }
-                    }
-                    // The ORDER BY column did not match the established ascending/descending
-                    // pattern OR did not match the next index key component.
-                    // The only hope for the sort being preserved is that
-                    // (A) the ORDER BY column matches a later index key component
-                    // -- so keep searching -- AND
-                    // (B) the current (and each intervening) index key component is constrained
-                    // to a single value, i.e. it is equality-filtered.
-                    // -- so note the current component's position (jj).
-                    orderSpoilers[nSpoilers++] = jj;
-                }
-                if (jj < keyComponentCount) {
-                    // The loop exited prematurely.
-                    // That means the current ORDER BY column matched the current key component,
-                    // so move on to the next key component (to match the next ORDER BY column).
-                    ++jj;
-                } else {
-                    // The current ORDER BY column ran out of key components to try to match.
-                    // This is an outright failure case.
-                    retval.sortDirection = SortDirectionType.INVALID;
-                    bindingsForOrder.clear(); // suddenly irrelevant
-                    return 0;  // Any orderSpoilers are also suddenly irrelevant.
-                }
-            }
+        // More indexed expressions are ok.
+        WindowFunctionScoreboard windowFunctionScores = new WindowFunctionScoreboard(pss, singleValueChecker, tableScan.getTableName());
+        retval.sortDirection = windowFunctionScores.isSortAscending() ? SortDirectionType.ASC : SortDirectionType.DESC;
+
+        // indexCtr is an index into the index expressions or columns.
+        for (int indexCtr = 0; !windowFunctionScores.isDone() && indexCtr < keyComponentCount; indexCtr += 1) {
+            // Figure out what to do with index expression or column at indexCtr.
+            // First, fetch it out.
+            AbstractExpression indexExpr = (indexedExprs == null) ? null : indexedExprs.get(indexCtr);
+            ColumnRef indexColRef = (indexedColRefs == null) ? null : indexedColRefs.get(indexCtr);
+            // Then see if it matches something.  If
+            // this doesn't match one thing it may match
+            // another.
+            windowFunctionScores.matchIndexEntry(indexExpr, indexColRef);
         }
-        return nSpoilers;
+        return windowFunctionScores.getResult();
     }
 
 
@@ -1100,7 +1334,7 @@ public abstract class SubPlanAssembler {
         // Filters leveraged for an optimization, such as the skipping of an ORDER BY plan node
         // always risk adding a dependency on a particular parameterization, so be prepared to
         // add prerequisite parameter bindings to the plan.
-        List<AbstractExpression> otherBindingsForOrder = new ArrayList<AbstractExpression>();
+        List<AbstractExpression> otherBindingsForOrder = new ArrayList<>();
         // Order spoilers must be recovered in the order they were found
         // for the index ordering to be considered acceptable.
         // Each spoiler key component is recovered by the detection of an equality filter on it.
@@ -1229,7 +1463,7 @@ public abstract class SubPlanAssembler {
                             // is often a "shared object" and is intended to be treated as immutable.
                             // To add a parameter to it, first copy the List.
                             List<AbstractExpression> moreBinding =
-                                new ArrayList<AbstractExpression>(binding);
+                                new ArrayList<>(binding);
                             moreBinding.add(pve);
                             binding = moreBinding;
                         } else if (otherExpr instanceof ConstantValueExpression) {
@@ -1359,7 +1593,7 @@ public abstract class SubPlanAssembler {
      */
     private static List<AbstractExpression> removeNotNullCoveredExpressions(StmtTableScan tableScan, List<AbstractExpression> coveringExprs, List<AbstractExpression> exprsToCover) {
         // Collect all TVEs from NULL-rejecting covering expressions
-        Set<TupleValueExpression> coveringTves = new HashSet<TupleValueExpression>();
+        Set<TupleValueExpression> coveringTves = new HashSet<>();
         for (AbstractExpression coveringExpr : coveringExprs) {
             if (ExpressionUtil.isNullRejectingExpression(coveringExpr, tableScan.getTableAlias())) {
                 coveringTves.addAll(ExpressionUtil.getTupleValueExpressions(coveringExpr));
