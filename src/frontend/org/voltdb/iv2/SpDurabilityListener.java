@@ -59,9 +59,12 @@ public class SpDurabilityListener implements DurabilityListener {
     }
 
     class AsyncCompletionChecks implements CommandLog.CompletionChecks {
-        protected long m_lastSpUniqueId;
-        protected long m_lastMpUniqueId;
-        protected boolean m_changed = false;
+        public long m_lastSpUniqueId;
+        public long m_lastMpUniqueId;
+        public long m_expectedSpUniqueId = 0;
+        public long m_expectedMpUniqueId = 0;
+        public boolean m_changed = false;
+        public boolean m_wasChanged = false;
 
         AsyncCompletionChecks(long lastSpUniqueId, long lastMpUniqueId) {
             m_lastSpUniqueId = lastSpUniqueId;
@@ -70,6 +73,10 @@ public class SpDurabilityListener implements DurabilityListener {
 
         @Override
         public CommandLog.CompletionChecks startNewCheckList(int startSize) {
+            assert(m_expectedSpUniqueId == 0 && m_expectedMpUniqueId == 0);
+            m_expectedSpUniqueId = m_lastSpUniqueId;
+            m_expectedMpUniqueId = m_lastMpUniqueId;
+            m_wasChanged = m_changed;
             return new AsyncCompletionChecks(m_lastSpUniqueId, m_lastMpUniqueId);
         }
 
@@ -81,11 +88,11 @@ public class SpDurabilityListener implements DurabilityListener {
         @Override
         public void setLastDurableUniqueId(long uniqueId) {
             if (UniqueIdGenerator.getPartitionIdFromUniqueId(uniqueId) == MpInitiator.MP_INIT_PID) {
-                assert m_lastMpUniqueId <= uniqueId;
+                assert m_lastMpUniqueId < uniqueId;
                 m_lastMpUniqueId = uniqueId;
             }
             else {
-                assert m_lastSpUniqueId <= uniqueId;
+                assert m_lastSpUniqueId < uniqueId;
                 m_lastSpUniqueId = uniqueId;
             }
             m_changed = true;
@@ -93,6 +100,7 @@ public class SpDurabilityListener implements DurabilityListener {
 
         @Override
         public boolean isChanged() {
+            assert (m_expectedSpUniqueId != 0 && m_changed == m_wasChanged);
             return m_changed;
         }
 
@@ -103,15 +111,15 @@ public class SpDurabilityListener implements DurabilityListener {
 
         @Override
         public void processChecks() {
-            if (m_changed) {
-                if (log.isTraceEnabled()) {
-                    log.trace("Notifying of last made durable: SP " + UniqueIdGenerator.toShortString(m_lastSpUniqueId) +
-                              ", MP " + UniqueIdGenerator.toShortString(m_lastMpUniqueId));
-                }
-                // Notify the SP UniqueId listeners
-                for (DurableUniqueIdListener listener : m_uniqueIdListeners) {
-                    listener.lastUniqueIdsMadeDurable(m_lastSpUniqueId, m_lastMpUniqueId);
-                }
+            assert (m_expectedSpUniqueId != 0 && m_changed == m_wasChanged);
+            assert(m_expectedSpUniqueId == m_lastSpUniqueId && m_expectedMpUniqueId == m_lastMpUniqueId);
+            if (log.isTraceEnabled()) {
+                log.trace("Notifying of last made durable: SP " + UniqueIdGenerator.toShortString(m_lastSpUniqueId) +
+                          ", MP " + UniqueIdGenerator.toShortString(m_lastMpUniqueId));
+            }
+            // Notify the SP UniqueId listeners
+            for (DurableUniqueIdListener listener : m_uniqueIdListeners) {
+                listener.lastUniqueIdsMadeDurable(m_lastSpUniqueId, m_lastMpUniqueId);
             }
         }
     }
