@@ -473,7 +473,7 @@ public class SpScheduler extends Scheduler implements SnapshotCompletionInterest
                  */
                 uniqueId = UniqueIdGenerator.makeIdFromComponents(
                         Math.max(System.currentTimeMillis(), m_uniqueIdGenerator.lastUsedTime),
-                        0,
+                        UniqueIdGenerator.COUNTER_MAX_VALUE,
                         m_uniqueIdGenerator.partitionId);
 
                 newSpHandle = getMaxScheduledTxnSpHandle();
